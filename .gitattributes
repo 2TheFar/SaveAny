@@ -1,0 +1,5 @@
+*.md text eol=lf working-tree-encoding=UTF-8
+*.ts text eol=lf
+*.tsx text eol=lf
+*.py text eol=lf
+*.json text eol=lf
