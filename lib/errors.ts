@@ -11,7 +11,13 @@ export type SaveAnyErrorCode =
   | "DOWNLOAD_TIMEOUT"
   | "DEPENDENCY_MISSING"
   | "TASK_NOT_FOUND"
-  | "FILE_NOT_FOUND";
+  | "FILE_NOT_FOUND"
+  | "SUBTITLE_NOT_FOUND"
+  | "AI_PROVIDER_NOT_CONFIGURED"
+  | "AI_PROVIDER_FAILED"
+  | "AI_RESPONSE_INVALID"
+  | "AI_CONTEXT_TOO_LONG"
+  | "CHAT_CONTEXT_NOT_READY";
 
 export class SaveAnyError extends Error {
   code: SaveAnyErrorCode;

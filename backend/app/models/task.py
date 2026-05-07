@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.models.ai import SubtitleTaskRequest, SummaryTaskRequest
 from app.models.media import QualityValue
 
 TaskStatus = Literal["pending", "running", "success", "failed", "expired"]
@@ -13,6 +14,14 @@ class DownloadTaskRequest(BaseModel):
 
     url: str
     quality: QualityValue = "best"
+
+
+class SubtitleCreateRequest(SubtitleTaskRequest):
+    pass
+
+
+class SummaryCreateRequest(SummaryTaskRequest):
+    pass
 
 
 class TaskCreateResponse(BaseModel):
@@ -35,4 +44,3 @@ class TaskSnapshot(BaseModel):
     ownerId: str | None = None
     entitlement: str | None = None
     result: dict | None = None
-

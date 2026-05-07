@@ -20,6 +20,7 @@ import {
   Zap
 } from "lucide-react";
 import { FormEvent, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type Quality = "best" | "1080p" | "720p" | "audio";
 
@@ -82,6 +83,7 @@ const platformCards = [
 ];
 
 export default function Home() {
+  const router = useRouter();
   const [url, setUrl] = useState("");
   const [quality, setQuality] = useState<Quality>("best");
   const [info, setInfo] = useState<VideoInfo | null>(null);
@@ -115,6 +117,7 @@ export default function Home() {
       setQuality(data.info.recommendedQuality || "best");
       setStatus("ready");
       setMessage(`解析完成：${platformLabel(data.info.platform)} · ${data.info.resolverUsed}`);
+      router.push(`/workspace?url=${encodeURIComponent(url.trim())}`);
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "解析失败，请换一个链接试试。");
