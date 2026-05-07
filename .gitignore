@@ -6,6 +6,7 @@ node_modules/
 
 .saveany-cache/
 backend/storage/downloads/
+backend/storage/models/
 backend/storage/thumbnails/
 backend/storage/ai/
 backend/storage/logs/

@@ -10,7 +10,16 @@ type BackendErrorPayload = {
 };
 
 export function getBackendBaseUrl() {
-  return process.env.SAVEANY_BACKEND_URL?.replace(/\/+$/, "") || null;
+  const configured = process.env.SAVEANY_BACKEND_URL?.replace(/\/+$/, "");
+  if (configured) {
+    return configured;
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    return "http://127.0.0.1:8000";
+  }
+
+  return null;
 }
 
 export function absolutizeBackendUrl(value: string | null | undefined) {

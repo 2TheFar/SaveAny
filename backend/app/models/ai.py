@@ -18,7 +18,15 @@ class TranscriptSegment(BaseModel):
 
 class SubtitleSource(BaseModel):
     platform: str
-    subtitleSource: Literal["yt_dlp", "bilibili_web"]
+    subtitleSource: Literal[
+        "yt_dlp",
+        "bilibili_web",
+        "platform_caption",
+        "bilibili_ai_caption",
+        "bilibili_auto_caption",
+        "youtube_caption",
+        "asr_faster_whisper",
+    ]
     language: str
 
 

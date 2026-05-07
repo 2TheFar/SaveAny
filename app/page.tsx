@@ -19,7 +19,7 @@ import {
   Wand2,
   Zap
 } from "lucide-react";
-import { FormEvent, useMemo, useState } from "react";
+import { KeyboardEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Quality = "best" | "1080p" | "720p" | "audio";
@@ -94,8 +94,14 @@ export default function Home() {
   const durationText = useMemo(() => formatDuration(info?.duration), [info?.duration]);
   const qualityOptions = info?.availableQualities?.length ? info.availableQualities : defaultQualities;
 
-  async function handleAnalyze(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleAnalyze() {
+    const cleanUrl = url.trim();
+    if (!cleanUrl) {
+      setStatus("error");
+      setMessage("请先粘贴一个公开视频链接。");
+      return;
+    }
+
     setInfo(null);
     setDownload(null);
     setStatus("parsing");
@@ -105,7 +111,7 @@ export default function Home() {
       const response = await fetch("/api/video/info", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url })
+        body: JSON.stringify({ url: cleanUrl })
       });
       const data = await response.json();
 
@@ -117,11 +123,22 @@ export default function Home() {
       setQuality(data.info.recommendedQuality || "best");
       setStatus("ready");
       setMessage(`解析完成：${platformLabel(data.info.platform)} · ${data.info.resolverUsed}`);
-      router.push(`/workspace?url=${encodeURIComponent(url.trim())}`);
+      router.push(`/workspace?url=${encodeURIComponent(cleanUrl)}`);
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "解析失败，请换一个链接试试。");
     }
+  }
+
+  function handleUrlKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    if (status === "parsing" || status === "downloading") {
+      return;
+    }
+    void handleAnalyze();
   }
 
   async function handleDownload() {
@@ -184,16 +201,21 @@ export default function Home() {
           <p>跨平台保存公开视频，少一步复制，多一份备份。无需安装插件，手机电脑都能用。</p>
         </div>
 
-        <form className="search-panel" onSubmit={handleAnalyze}>
+        <div className="search-panel">
           <div className="url-box">
             <Link2 size={22} />
             <input
               value={url}
               onChange={(event) => setUrl(event.target.value)}
+              onKeyDown={handleUrlKeyDown}
               placeholder="粘贴 YouTube / Bilibili / TikTok 等公开视频链接"
               aria-label="视频链接"
             />
-            <button type="submit" disabled={status === "parsing" || status === "downloading"}>
+            <button
+              type="button"
+              onClick={() => void handleAnalyze()}
+              disabled={status === "parsing" || status === "downloading"}
+            >
               {status === "parsing" ? <Loader2 className="spin" size={18} /> : <Search size={18} />}
               解析
             </button>
@@ -213,7 +235,7 @@ export default function Home() {
               </button>
             ))}
           </div>
-        </form>
+        </div>
 
         <div className={`status-strip ${status}`}>
           {status === "parsing" || status === "downloading" ? (

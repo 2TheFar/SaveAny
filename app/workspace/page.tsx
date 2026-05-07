@@ -64,7 +64,14 @@ type SubtitleResult = {
   transcript: TranscriptSegment[];
   source: {
     platform: string;
-    subtitleSource: "yt_dlp" | "bilibili_web";
+    subtitleSource:
+      | "yt_dlp"
+      | "bilibili_web"
+      | "platform_caption"
+      | "bilibili_ai_caption"
+      | "bilibili_auto_caption"
+      | "youtube_caption"
+      | "asr_faster_whisper";
     language: string;
   };
 };

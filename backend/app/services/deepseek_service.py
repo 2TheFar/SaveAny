@@ -1,9 +1,11 @@
 import json
 import os
+import time
 from typing import Any
 
 import requests
 
+from app.core import config as _config  # Ensure backend/.env is loaded before reading env vars.
 from app.core.errors import SaveAnyBackendError
 from app.models.ai import ChatReference, ChatResponse, SubtitleResult, SummaryResult
 
@@ -59,6 +61,56 @@ def chat_with_deepseek(question: str, history: list[dict[str, str]], summary: Su
 
 
 def call_deepseek_json(messages: list[dict[str, str]], max_tokens: int) -> dict[str, Any]:
+    response = post_deepseek(
+        {
+            "model": DEEPSEEK_MODEL,
+            "messages": messages,
+            "response_format": {"type": "json_object"},
+            "stream": False,
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+        }
+    )
+
+    try:
+        content = response.json()["choices"][0]["message"]["content"]
+        return json.loads(content)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise SaveAnyBackendError("AI_RESPONSE_INVALID", "DeepSeek 返回内容不是有效 JSON。", 502) from exc
+
+
+def ping_deepseek() -> dict[str, Any]:
+    started_at = time.perf_counter()
+    response = post_deepseek(
+        {
+            "model": DEEPSEEK_MODEL,
+            "messages": [
+                {"role": "system", "content": "Reply with pong."},
+                {"role": "user", "content": "ping"},
+            ],
+            "stream": False,
+            "temperature": 0,
+            "max_tokens": 16,
+        },
+        timeout=(10, 60),
+    )
+
+    try:
+        payload = response.json()
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise SaveAnyBackendError("AI_RESPONSE_INVALID", "DeepSeek 连通性检测返回结构无效。", 502) from exc
+
+    return {
+        "ok": True,
+        "model": DEEPSEEK_MODEL,
+        "latencyMs": round((time.perf_counter() - started_at) * 1000, 2),
+        "message": content,
+        "error": None,
+    }
+
+
+def post_deepseek(payload: dict[str, Any], timeout: tuple[int, int] = (10, 120)) -> requests.Response:
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         raise SaveAnyBackendError("AI_PROVIDER_NOT_CONFIGURED", "请先配置 DeepSeek API Key。", 503)
@@ -70,28 +122,16 @@ def call_deepseek_json(messages: list[dict[str, str]], max_tokens: int) -> dict[
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": DEEPSEEK_MODEL,
-                "messages": messages,
-                "response_format": {"type": "json_object"},
-                "stream": False,
-                "temperature": 0.2,
-                "max_tokens": max_tokens,
-            },
-            timeout=(10, 120),
+            json=payload,
+            timeout=timeout,
         )
         response.raise_for_status()
+        return response
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else 502
         raise SaveAnyBackendError("AI_PROVIDER_FAILED", f"DeepSeek API 调用失败：{status}。", 502) from exc
     except requests.RequestException as exc:
         raise SaveAnyBackendError("AI_PROVIDER_FAILED", "DeepSeek API 暂时不可用，请稍后重试。", 502) from exc
-
-    try:
-        content = response.json()["choices"][0]["message"]["content"]
-        return json.loads(content)
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        raise SaveAnyBackendError("AI_RESPONSE_INVALID", "DeepSeek 返回内容不是有效 JSON。", 502) from exc
 
 
 def build_summary_prompt(subtitles: SubtitleResult) -> str:

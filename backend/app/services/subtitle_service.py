@@ -1,139 +1,123 @@
 import json
 import re
-import subprocess
-from pathlib import Path
-from urllib.parse import quote, unquote_to_bytes
+import xml.etree.ElementTree as ET
+from html import unescape
+from urllib.parse import parse_qs, quote, unquote_to_bytes, urlparse
 
 import requests
 
 from app.core.config import BROWSER_USER_AGENT
 from app.core.errors import SaveAnyBackendError
 from app.models.ai import SubtitleResult, SubtitleSource, TranscriptSegment
-from app.services.ai_cache_service import cache_dir_for_url, read_cached_json, write_cached_json
+from app.services.ai_cache_service import read_cached_json, write_cached_json
+from app.services.asr_service import transcribe_with_asr
+from app.services.audio_service import prepare_audio_for_transcription
 from app.services.platform_service import assert_valid_url, detect_platform
-from app.services.yt_dlp_resolver import map_yt_dlp_error
 
 
 def extract_subtitles(url: str, language_priority: list[str]) -> SubtitleResult:
     safe_url = assert_valid_url(url)
     cached = read_cached_json(safe_url, "subtitles.json")
     if cached:
-        return SubtitleResult.model_validate(cached)
-
-    if detect_platform(safe_url) == "bilibili":
         try:
-            result = extract_bilibili_website_subtitles(safe_url)
-            write_cached_json(safe_url, "subtitles.json", result.model_dump())
-            return result
-        except SaveAnyBackendError as exc:
-            if exc.code != "SUBTITLE_NOT_FOUND":
-                raise
+            return SubtitleResult.model_validate(cached)
+        except Exception:
+            pass
 
-    target_dir = cache_dir_for_url(safe_url)
-    clear_subtitle_files(target_dir)
-    languages = build_subtitle_languages(language_priority)
-    output_template = str(target_dir / "subtitle.%(ext)s")
-    command = [
-        "yt-dlp",
-        "--skip-download",
-        "--no-playlist",
-        "--no-warnings",
-        "--write-subs",
-        "--write-auto-subs",
-        "--sub-langs",
-        languages,
-        "--sub-format",
-        "json3/vtt/best",
-        "-o",
-        output_template,
-        safe_url,
-    ]
+    result = try_platform_subtitles(safe_url, language_priority)
+    if result is None:
+        result = try_asr_fallback(safe_url)
 
-    try:
-        subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=90,
-            check=True,
-        )
-    except FileNotFoundError as exc:
-        raise SaveAnyBackendError("DEPENDENCY_MISSING", "服务器未安装 yt-dlp，无法提取字幕。", 500) from exc
-    except subprocess.CalledProcessError as exc:
-        message = (exc.stderr or "") + (exc.stdout or "")
-        if "There are no subtitles" in message or "No subtitles" in message:
-            raise subtitle_not_found() from exc
-        raise map_yt_dlp_error(message) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise SaveAnyBackendError("RATE_LIMITED", "字幕提取超时，请稍后重试。") from exc
-
-    subtitle_file = pick_subtitle_file(target_dir, language_priority)
-    if not subtitle_file:
-        raise subtitle_not_found()
-
-    transcript = parse_subtitle_file(subtitle_file)
-    if not transcript:
-        raise subtitle_not_found()
-
-    language = detect_language_from_name(subtitle_file.name, language_priority)
-    result = SubtitleResult(
-        transcript=transcript,
-        source=SubtitleSource(platform=detect_platform(safe_url), subtitleSource="yt_dlp", language=language),
-    )
     write_cached_json(safe_url, "subtitles.json", result.model_dump())
     return result
 
 
-def build_subtitle_languages(language_priority: list[str]) -> str:
-    normalized = [item.lower() for item in language_priority if item]
-    if not normalized:
-        normalized = ["zh", "en"]
-    patterns: list[str] = []
-    for language in normalized:
-        if language.startswith("zh"):
-            patterns.extend(["zh.*", "zh-Hans", "zh-Hant", "zh-CN", "zh"])
-        elif language.startswith("en"):
-            patterns.extend(["en.*", "en"])
-        else:
-            patterns.extend([f"{language}.*", language])
-    return ",".join(dict.fromkeys(patterns))
+def try_platform_subtitles(url: str, language_priority: list[str]) -> SubtitleResult | None:
+    platform = detect_platform(url)
+    if platform == "bilibili":
+        return extract_bilibili_platform_subtitles(url, language_priority)
+    if platform == "youtube":
+        return extract_youtube_platform_subtitles(url, language_priority)
+    if platform == "douyin":
+        return None
+    return None
 
 
-def extract_bilibili_website_subtitles(url: str) -> SubtitleResult:
+def try_asr_fallback(url: str) -> SubtitleResult:
+    audio_path = prepare_audio_for_transcription(url)
+    return transcribe_with_asr(audio_path, detect_platform(url))
+
+
+def extract_bilibili_platform_subtitles(url: str, language_priority: list[str]) -> SubtitleResult | None:
     metadata = fetch_bilibili_metadata(url)
-    payload = fetch_bilibili_subtitle_payload(metadata)
-    subtitle_url = extract_bilibili_subtitle_url(payload)
-    if not subtitle_url:
-        raise subtitle_not_found()
+    candidates = fetch_bilibili_candidates(metadata, url)
+    if candidates:
+        chosen = pick_bilibili_candidate(candidates, language_priority)
+        transcript = fetch_bilibili_subtitle_json(chosen["subtitle_url"], metadata["referer"])
+        if transcript:
+            return SubtitleResult(
+                transcript=transcript,
+                source=SubtitleSource(
+                    platform="bilibili",
+                    subtitleSource=chosen["source"],
+                    language=chosen["language"],
+                ),
+            )
 
     try:
-        response = requests.get(subtitle_url, headers=bilibili_headers(bilibili_referer(str(metadata["bvid"]))), timeout=20)
-        response.raise_for_status()
-        data = response.json()
-    except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else 0
-        raise SaveAnyBackendError("RESOLVER_FAILED", f"Bilibili 字幕接口返回 {status or '未知状态'}。") from exc
-    except (requests.RequestException, json.JSONDecodeError) as exc:
-        raise SaveAnyBackendError("RESOLVER_FAILED", "Bilibili 字幕接口暂时不可用。") from exc
+        transcript = fetch_bilibili_web_subtitles(metadata)
+    except SaveAnyBackendError as exc:
+        if exc.code != "SUBTITLE_NOT_FOUND":
+            raise
+        return None
 
-    transcript = parse_bilibili_subtitle_json(data)
+    if transcript:
+        return SubtitleResult(
+            transcript=transcript,
+            source=SubtitleSource(
+                platform="bilibili",
+                subtitleSource="bilibili_ai_caption",
+                language="zh",
+            ),
+        )
+    return None
+
+
+def extract_youtube_platform_subtitles(url: str, language_priority: list[str]) -> SubtitleResult | None:
+    html = fetch_text(url, referer=url)
+    player_response = parse_youtube_player_response(html)
+    captions = ((player_response.get("captions") or {}).get("playerCaptionsTracklistRenderer") or {})
+    tracks = captions.get("captionTracks") or []
+    if not isinstance(tracks, list) or not tracks:
+        return None
+
+    chosen = pick_youtube_track(tracks, language_priority)
+    if not chosen:
+        return None
+
+    transcript = fetch_youtube_caption_xml(str(chosen.get("baseUrl") or ""))
     if not transcript:
-        raise subtitle_not_found()
+        return None
 
     return SubtitleResult(
         transcript=transcript,
-        source=SubtitleSource(platform="bilibili", subtitleSource="bilibili_web", language="zh"),
+        source=SubtitleSource(
+            platform="youtube",
+            subtitleSource="youtube_caption",
+            language=str(chosen.get("languageCode") or "unknown"),
+        ),
     )
 
 
 def fetch_bilibili_metadata(url: str) -> dict[str, int | str]:
+    parsed = urlparse(url)
     bvid_match = re.search(r"BV[a-zA-Z0-9]+", url)
     if not bvid_match:
         raise SaveAnyBackendError("INVALID_URL", "Bilibili 链接缺少 BV 号。")
 
     bvid = bvid_match.group(0)
+    page_index = max(1, int(parse_qs(parsed.query).get("p", ["1"])[0]))
+
     try:
         response = requests.get(
             f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
@@ -147,17 +131,106 @@ def fetch_bilibili_metadata(url: str) -> dict[str, int | str]:
 
     data = payload.get("data") if isinstance(payload, dict) else None
     pages = data.get("pages") if isinstance(data, dict) else None
-    first_page = pages[0] if isinstance(pages, list) and pages else {}
+    if not isinstance(pages, list) or not pages:
+        raise SaveAnyBackendError("RESOLVER_FAILED", "Bilibili 视频信息缺少分 P 数据。")
+
+    page_offset = min(page_index - 1, len(pages) - 1)
+    page = pages[page_offset] if isinstance(pages[page_offset], dict) else {}
     aid = data.get("aid") if isinstance(data, dict) else None
-    cid = first_page.get("cid") if isinstance(first_page, dict) else None
-    duration = first_page.get("duration") if isinstance(first_page, dict) else data.get("duration")
+    cid = page.get("cid")
+    duration = page.get("duration") if isinstance(page, dict) else 0
     if not isinstance(aid, int) or not isinstance(cid, int):
         raise SaveAnyBackendError("RESOLVER_FAILED", "Bilibili 视频信息缺少字幕参数。")
 
-    return {"aid": aid, "cid": cid, "duration": int(duration or 0), "bvid": bvid}
+    referer = f"https://www.bilibili.com/video/{bvid}/"
+    if page_index > 1:
+        referer = f"{referer}?p={page_index}"
+
+    return {
+        "aid": aid,
+        "cid": cid,
+        "duration": int(duration or 0),
+        "bvid": bvid,
+        "referer": referer,
+    }
 
 
-def fetch_bilibili_subtitle_payload(metadata: dict[str, int | str]) -> bytes:
+def fetch_bilibili_candidates(metadata: dict[str, int | str], referer: str) -> list[dict[str, str]]:
+    url = (
+        "https://api.bilibili.com/x/player/wbi/v2"
+        f"?cid={metadata['cid']}&aid={metadata['aid']}&bvid={metadata['bvid']}"
+    )
+    try:
+        response = requests.get(url, headers=bilibili_headers(referer), timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, json.JSONDecodeError):
+        return []
+
+    subtitles = (((payload.get("data") or {}).get("subtitle") or {}).get("subtitles") or [])
+    if not isinstance(subtitles, list):
+        return []
+
+    candidates: list[dict[str, str]] = []
+    for item in subtitles:
+        if not isinstance(item, dict):
+            continue
+        subtitle_url = normalize_bilibili_subtitle_url(item.get("subtitle_url"))
+        if not subtitle_url:
+            continue
+        language = str(item.get("lan") or item.get("lan_doc") or "unknown")
+        candidates.append(
+            {
+                "subtitle_url": subtitle_url,
+                "language": language.lower(),
+                "source": classify_bilibili_subtitle_source(item),
+            }
+        )
+    return candidates
+
+
+def classify_bilibili_subtitle_source(item: dict) -> str:
+    for key in ("is_ai", "ai_generated", "ai_status", "ai_type"):
+        value = item.get(key)
+        if isinstance(value, bool) and value:
+            return "bilibili_ai_caption"
+        if isinstance(value, int) and value > 0:
+            return "bilibili_ai_caption"
+    text = json.dumps(item, ensure_ascii=False).lower()
+    if "ai" in text:
+        return "bilibili_ai_caption"
+    return "bilibili_auto_caption"
+
+
+def pick_bilibili_candidate(candidates: list[dict[str, str]], language_priority: list[str]) -> dict[str, str]:
+    def score(candidate: dict[str, str]) -> tuple[int, int]:
+        source = candidate["source"]
+        source_rank = 0 if source == "bilibili_ai_caption" else 1
+        language_rank = 100
+        for index, language in enumerate(language_priority or ["zh", "en"]):
+            if candidate["language"].startswith(language.lower()):
+                language_rank = index
+                break
+        if candidate["language"].startswith("zh") and language_rank == 100:
+            language_rank = 50
+        if candidate["language"].startswith("en") and language_rank == 100:
+            language_rank = 60
+        return (language_rank, source_rank)
+
+    return sorted(candidates, key=score)[0]
+
+
+def fetch_bilibili_subtitle_json(subtitle_url: str, referer: str) -> list[TranscriptSegment]:
+    try:
+        response = requests.get(subtitle_url, headers=bilibili_headers(referer), timeout=20)
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, json.JSONDecodeError):
+        return []
+    return parse_bilibili_subtitle_json(data)
+
+
+def fetch_bilibili_web_subtitles(metadata: dict[str, int | str]) -> list[TranscriptSegment]:
     context_ext = quote(json.dumps({"video_type": 1}, separators=(",", ":")))
     url = (
         "https://api.bilibili.com/x/v2/subtitle/web/view"
@@ -167,15 +240,29 @@ def fetch_bilibili_subtitle_payload(metadata: dict[str, int | str]) -> bytes:
     last_error: requests.RequestException | None = None
     for _ in range(3):
         try:
-            response = requests.get(url, headers=bilibili_headers(bilibili_referer(str(metadata["bvid"]))), timeout=20)
+            response = requests.get(url, headers=bilibili_headers(str(metadata["referer"])), timeout=20)
             response.raise_for_status()
             if response.content and response.content != b"\n\x00":
-                return response.content
+                subtitle_url = extract_bilibili_subtitle_url(response.content)
+                if subtitle_url:
+                    transcript = fetch_bilibili_subtitle_json(subtitle_url, str(metadata["referer"]))
+                    if transcript:
+                        return transcript
         except requests.RequestException as exc:
             last_error = exc
     if last_error:
         raise SaveAnyBackendError("RESOLVER_FAILED", "Bilibili 字幕列表接口暂时不可用。") from last_error
     raise subtitle_not_found()
+
+
+def normalize_bilibili_subtitle_url(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    if value.startswith("//"):
+        return f"https:{value}"
+    if value.startswith("/"):
+        return f"https://api.bilibili.com{value}"
+    return value
 
 
 def extract_bilibili_subtitle_url(payload: bytes) -> str | None:
@@ -228,7 +315,7 @@ def parse_bilibili_subtitle_json(data: object) -> list[TranscriptSegment]:
             continue
         start = item.get("from")
         end = item.get("to")
-        text = normalize_subtitle_text(str(item.get("content") or ""))
+        text = normalize_text(str(item.get("content") or ""))
         if not isinstance(start, (int, float)) or not text:
             continue
         transcript.append(
@@ -241,133 +328,98 @@ def parse_bilibili_subtitle_json(data: object) -> list[TranscriptSegment]:
     return transcript
 
 
-def bilibili_headers(referer: str) -> dict[str, str]:
-    return {
-        "User-Agent": BROWSER_USER_AGENT,
-        "Referer": referer,
-        "Accept": "*/*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    }
+def parse_youtube_player_response(html: str) -> dict:
+    match = re.search(r"ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;", html)
+    if not match:
+        raise SaveAnyBackendError("RESOLVER_FAILED", "YouTube 页面中未找到字幕元信息。")
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise SaveAnyBackendError("RESOLVER_FAILED", "YouTube 页面字幕元信息无法解析。") from exc
 
 
-def bilibili_referer(bvid: str) -> str:
-    return f"https://www.bilibili.com/video/{bvid}/"
-
-
-def clear_subtitle_files(target_dir: Path) -> None:
-    for path in target_dir.glob("subtitle.*"):
-        if path.suffix.lower() in {".vtt", ".json3", ".json"}:
-            path.unlink(missing_ok=True)
-
-
-def pick_subtitle_file(target_dir: Path, language_priority: list[str]) -> Path | None:
-    candidates = [path for path in target_dir.glob("subtitle.*") if path.suffix.lower() in {".json3", ".json", ".vtt"}]
+def pick_youtube_track(tracks: list[dict], language_priority: list[str]) -> dict | None:
+    candidates = [track for track in tracks if isinstance(track, dict) and track.get("baseUrl")]
     if not candidates:
         return None
 
-    def score(path: Path) -> tuple[int, int]:
-        name = path.name.lower()
-        language_score = 100
-        for index, language in enumerate(language_priority or ["zh", "en"]):
-            if language.lower() in name:
-                language_score = index
+    def score(track: dict) -> tuple[int, int]:
+        language = str(track.get("languageCode") or "").lower()
+        kind = str(track.get("kind") or "")
+        language_rank = 100
+        for index, preferred in enumerate(language_priority or ["zh", "en"]):
+            if language.startswith(preferred.lower()):
+                language_rank = index
                 break
-        format_score = 0 if path.suffix.lower() in {".json3", ".json"} else 1
-        return (language_score, format_score)
+        if language.startswith("zh") and language_rank == 100:
+            language_rank = 50
+        if language.startswith("en") and language_rank == 100:
+            language_rank = 60
+        asr_rank = 1 if kind == "asr" else 0
+        return (language_rank, asr_rank)
 
     return sorted(candidates, key=score)[0]
 
 
-def parse_subtitle_file(path: Path) -> list[TranscriptSegment]:
-    if path.suffix.lower() in {".json3", ".json"}:
-        return parse_json3(path)
-    return parse_vtt(path)
-
-
-def parse_json3(path: Path) -> list[TranscriptSegment]:
+def fetch_youtube_caption_xml(base_url: str) -> list[TranscriptSegment]:
+    if not base_url:
+        return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        response = requests.get(base_url, headers=generic_headers("https://www.youtube.com/"), timeout=20)
+        response.raise_for_status()
+    except requests.RequestException:
         return []
 
-    events = data.get("events") if isinstance(data, dict) else None
-    if not isinstance(events, list):
-        return []
-
-    segments: list[TranscriptSegment] = []
-    for item in events:
-        if not isinstance(item, dict) or not isinstance(item.get("segs"), list):
-            continue
-        text = "".join(str(seg.get("utf8") or "") for seg in item["segs"] if isinstance(seg, dict)).strip()
-        text = normalize_subtitle_text(text)
-        if not text:
-            continue
-        start_ms = item.get("tStartMs")
-        duration_ms = item.get("dDurationMs")
-        if not isinstance(start_ms, int):
-            continue
-        end_time = (start_ms + duration_ms) / 1000 if isinstance(duration_ms, int) else None
-        segments.append(TranscriptSegment(startTime=start_ms / 1000, endTime=end_time, text=text))
-    return merge_short_segments(segments)
-
-
-def parse_vtt(path: Path) -> list[TranscriptSegment]:
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        root = ET.fromstring(response.text)
+    except ET.ParseError:
         return []
 
-    segments: list[TranscriptSegment] = []
-    blocks = re.split(r"\n\s*\n", content.replace("\r\n", "\n"))
-    for block in blocks:
-        lines = [line.strip() for line in block.splitlines() if line.strip()]
-        timing_line = next((line for line in lines if "-->" in line), "")
-        if not timing_line:
+    transcript: list[TranscriptSegment] = []
+    for element in root.findall(".//text"):
+        start = element.attrib.get("start")
+        duration = element.attrib.get("dur")
+        text = normalize_text(unescape("".join(element.itertext())))
+        if not start or not text:
             continue
-        start_raw, end_raw = [part.strip().split()[0] for part in timing_line.split("-->", 1)]
-        text_lines = [line for line in lines[lines.index(timing_line) + 1 :] if not line.startswith(("NOTE", "STYLE"))]
-        text = normalize_subtitle_text(" ".join(text_lines))
-        if not text:
-            continue
-        segments.append(
-            TranscriptSegment(startTime=parse_vtt_time(start_raw), endTime=parse_vtt_time(end_raw), text=text)
+        start_time = float(start)
+        end_time = start_time + float(duration or 0)
+        transcript.append(
+            TranscriptSegment(
+                startTime=start_time,
+                endTime=end_time,
+                text=text,
+            )
         )
-    return merge_short_segments(segments)
+    return transcript
 
 
-def parse_vtt_time(value: str) -> float:
-    parts = value.replace(",", ".").split(":")
-    seconds = float(parts[-1])
-    minutes = int(parts[-2]) if len(parts) >= 2 else 0
-    hours = int(parts[-3]) if len(parts) >= 3 else 0
-    return hours * 3600 + minutes * 60 + seconds
+def fetch_text(url: str, referer: str | None = None) -> str:
+    response = requests.get(url, headers=generic_headers(referer), timeout=20)
+    response.raise_for_status()
+    return response.text
 
 
-def normalize_subtitle_text(value: str) -> str:
+def generic_headers(referer: str | None = None) -> dict[str, str]:
+    headers = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    if referer:
+        headers["Referer"] = referer
+    return headers
+
+
+def bilibili_headers(referer: str) -> dict[str, str]:
+    headers = generic_headers(referer)
+    headers["Accept"] = "*/*"
+    return headers
+
+
+def normalize_text(value: str) -> str:
     text = re.sub(r"<[^>]+>", "", value)
     text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("\n", " ")
     return re.sub(r"\s+", " ", text).strip()
-
-
-def merge_short_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
-    merged: list[TranscriptSegment] = []
-    for segment in segments:
-        if merged and segment.startTime == merged[-1].startTime and segment.text == merged[-1].text:
-            continue
-        merged.append(segment)
-    return merged
-
-
-def detect_language_from_name(name: str, language_priority: list[str]) -> str:
-    lower_name = name.lower()
-    for language in language_priority or ["zh", "en"]:
-        if language.lower() in lower_name:
-            return language
-    if "zh" in lower_name:
-        return "zh"
-    if "en" in lower_name:
-        return "en"
-    return "unknown"
 
 
 def subtitle_not_found() -> SaveAnyBackendError:
