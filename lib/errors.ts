@@ -17,7 +17,9 @@ export type SaveAnyErrorCode =
   | "AI_PROVIDER_FAILED"
   | "AI_RESPONSE_INVALID"
   | "AI_CONTEXT_TOO_LONG"
-  | "CHAT_CONTEXT_NOT_READY";
+  | "CHAT_CONTEXT_NOT_READY"
+  | "BILIBILI_LOGIN_FAILED"
+  | "BILIBILI_LOGIN_NOT_FOUND";
 
 export class SaveAnyError extends Error {
   code: SaveAnyErrorCode;

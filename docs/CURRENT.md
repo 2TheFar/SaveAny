@@ -62,6 +62,7 @@ Build:
 - beautiful landing and workspace UI
 - video URL analysis
 - video/audio download
+- Bilibili local QR login for highest-quality downloads
 - subtitle extraction from platform captions first
 - local ASR fallback with small/fast models
 - AI summary through DeepSeek V4 Flash
@@ -71,7 +72,7 @@ Build:
 
 Defer:
 
-- login
+- general multi-platform login
 - payment
 - quota system
 - cloud storage
@@ -110,4 +111,3 @@ Pin package versions instead of using `latest` once the stack is finalized.
 5. Implement subtitle priority: platform captions first, then ASR fallback.
 6. Standardize summary and chat on DeepSeek V4 Flash.
 7. Polish the first-screen product experience and workspace layout.
-

@@ -1,4 +1,5 @@
 from app.models.media import ResolvedMediaInfo
+from app.services.bilibili_resolver import resolve_with_bilibili
 from app.services.douyin_resolver import resolve_with_douyin
 from app.services.platform_service import assert_valid_url, detect_platform
 from app.services.yt_dlp_resolver import resolve_with_yt_dlp
@@ -10,5 +11,7 @@ def resolve_media_info(url: str) -> ResolvedMediaInfo:
 
     if platform == "douyin":
         return resolve_with_douyin(safe_url)
+    if platform == "bilibili":
+        return resolve_with_bilibili(safe_url)
 
     return resolve_with_yt_dlp(safe_url)

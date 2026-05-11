@@ -270,7 +270,7 @@ export default function Home() {
                   {platformLabel(info.platform)} · {info.resolverUsed}
                 </p>
                 {info.requiresCookie ? (
-                  <div className="notice-line">更高清晰度可能需要平台登录权限，SaveAny 默认不处理用户 Cookie。</div>
+                  <div className="notice-line">更高清晰度可能需要平台登录权限，B 站可在工作台扫码授权后重试。</div>
                 ) : null}
                 <div className="format-row">
                   {qualityOptions.map((option) => (

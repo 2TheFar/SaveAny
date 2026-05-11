@@ -162,7 +162,8 @@ SaveAny 是一个“公开视频保存 + 内容整理”的本地开发版项目
 - 字幕翻译：未实现。
 - 独立音频提取 API：未实现。
 - 批量任务：未实现。
-- 登录/支付/额度/数据库/队列：未实现。
+- Bilibili 本机扫码登录：已完成首版，仅用于账号权限内最高画质下载。
+- 支付/额度/数据库/队列：未实现。
 
 所以，当前并不是“还停留在第三阶段”，而是已经进入第四阶段，并完成了其中最核心的一部分。
 
@@ -213,6 +214,17 @@ pip install -r backend\requirements.txt
 
 - `yt-dlp`
 - `ffmpeg`
+- `BBDown`（用于 Bilibili 最高画质下载）
+
+BBDown 可通过 .NET tool 安装：
+
+```powershell
+dotnet tool install --global BBDown
+```
+
+默认 B 站编码优先级为 `avc,hevc,av1`，更接近 B 站客户端常见 1080p 缓存体积；如需优先小体积，可设置 `SAVEANY_BBDOWN_ENCODING_PRIORITY=hevc,av1,avc`。
+
+Bilibili 扫码登录态只保存在本机 `backend/storage/credentials/`，可在工作台清除。
 
 启动后端：
 
@@ -253,8 +265,8 @@ $env:DEEPSEEK_API_KEY="你的 Key"
 
 - 会员视频
 - 私密视频
-- 需要登录的视频
-- 依赖 Cookie 的高清视频
+- 非 Bilibili 的登录/私密视频
+- 账号本身无权限观看的会员高清视频
 
 ## A. 基础启动检查
 

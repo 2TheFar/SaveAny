@@ -8,20 +8,29 @@ import requests
 from app.core.config import BROWSER_USER_AGENT
 from app.core.errors import SaveAnyBackendError
 from app.models.media import QualityValue
+from app.services.bilibili_resolver import download_with_bilibili
 from app.services.douyin_resolver import select_douyin_format
+from app.services.platform_service import assert_valid_url, detect_platform
 from app.services.resolver_service import resolve_media_info
 from app.services.yt_dlp_resolver import map_yt_dlp_error, yt_dlp_quality_args
 
 
 def download_media(url: str, quality: QualityValue, target_dir: Path) -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
-    info = resolve_media_info(url)
+    safe_url = assert_valid_url(url)
+    platform = detect_platform(safe_url)
+
+    if platform == "bilibili":
+        info = resolve_media_info(safe_url)
+        return download_with_bilibili(safe_url, quality, target_dir, info.title)
+
+    info = resolve_media_info(safe_url)
 
     if info.platform == "douyin":
         selected = select_douyin_format(info.formats, quality)
         return download_direct_url(selected.url or "", target_dir, info.title, info.webpageUrl)
 
-    return download_with_yt_dlp(url, quality, target_dir)
+    return download_with_yt_dlp(safe_url, quality, target_dir)
 
 
 def download_with_yt_dlp(url: str, quality: QualityValue, target_dir: Path) -> Path:

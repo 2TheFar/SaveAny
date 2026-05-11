@@ -5,7 +5,18 @@ import subprocess
 import time
 from pathlib import Path
 
-from app.core.config import ASR_COMPUTE_TYPE, ASR_DEVICE, ASR_MODEL, DOWNLOAD_DIR, MODEL_DIR, THUMBNAIL_DIR
+from app.core.config import (
+    ASR_COMPUTE_TYPE,
+    ASR_DEVICE,
+    ASR_MODEL,
+    DOWNLOAD_DIR,
+    MODEL_DIR,
+    SAVEANY_BBDOWN_PATH,
+    SAVEANY_BBDOWN_WORK_DIR,
+    SAVEANY_BILIBILI_AUTH_FILE,
+    THUMBNAIL_DIR,
+    resolve_bbdown_executable,
+)
 from app.services.asr_service import asr_runtime_info
 
 
@@ -20,13 +31,16 @@ def run_system_check() -> dict:
         "checkedAt": time.time(),
         "dependencies": {
             "ytDlp": check_command("yt-dlp", "--version"),
+            "bbdown": check_bbdown(),
             "ffmpeg": check_command("ffmpeg", "-version"),
+            "qrcode": check_python_module("qrcode"),
             "fasterWhisper": check_python_module("faster_whisper"),
         },
         "storage": {
             "downloadDir": check_writable_directory(DOWNLOAD_DIR),
             "thumbnailDir": check_writable_directory(THUMBNAIL_DIR),
             "modelDir": check_writable_directory(MODEL_DIR),
+            "bbdownWorkDir": check_writable_directory(SAVEANY_BBDOWN_WORK_DIR),
         },
         "runtime": {
             "cuda": {
@@ -43,11 +57,14 @@ def run_system_check() -> dict:
         },
         "env": {
             "deepseekApiKey": {"ok": bool(os.environ.get("DEEPSEEK_API_KEY"))},
+            "bilibiliAuthFile": {"ok": SAVEANY_BILIBILI_AUTH_FILE.exists(), "path": str(SAVEANY_BILIBILI_AUTH_FILE)},
         },
         "features": {
             "mediaInfo": True,
             "downloadTasks": True,
             "douyinResolver": True,
+            "bilibiliResolver": True,
+            "bilibiliQrLogin": True,
             "asrFallback": True,
             "deepseekConnectivity": True,
             "futureTaskTypes": ["subtitle_extract", "audio_extract", "transcribe", "summarize", "batch_download"],
@@ -56,12 +73,14 @@ def run_system_check() -> dict:
 
 
 def check_command(command: str, *args: str) -> dict:
-    if not shutil.which(command):
-        return {"ok": False, "version": None, "error": f"{command} not found"}
+    resolved = shutil.which(command)
+    if not resolved and not Path(command).exists():
+        return {"ok": False, "version": None, "path": None, "error": f"{command} not found"}
+    executable = resolved or command
 
     try:
         result = subprocess.run(
-            [command, *args],
+            [executable, *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -70,10 +89,39 @@ def check_command(command: str, *args: str) -> dict:
             check=False,
         )
     except Exception as exc:
-        return {"ok": False, "version": None, "error": str(exc)}
+        return {"ok": False, "version": None, "path": executable, "error": str(exc)}
 
     first_line = (result.stdout or result.stderr or "").splitlines()[0:1]
-    return {"ok": result.returncode == 0, "version": first_line[0] if first_line else None, "error": None}
+    return {"ok": result.returncode == 0, "version": first_line[0] if first_line else None, "path": executable, "error": None}
+
+
+def check_bbdown() -> dict:
+    executable = resolve_bbdown_executable()
+    if not executable:
+        return {"ok": False, "version": None, "path": None, "error": f"{SAVEANY_BBDOWN_PATH} not found"}
+
+    try:
+        result = subprocess.run(
+            [executable, "--help"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            check=False,
+        )
+    except Exception as exc:
+        return {"ok": False, "version": None, "path": executable, "error": str(exc)}
+
+    output = result.stdout or result.stderr or ""
+    first_line = output.splitlines()[0:1]
+    ok = result.returncode == 0 and "BBDown" in output
+    return {
+        "ok": ok,
+        "version": first_line[0] if first_line else None,
+        "path": executable,
+        "error": None if ok else output.strip()[:300] or "BBDown help check failed",
+    }
 
 
 def check_writable_directory(path) -> dict:

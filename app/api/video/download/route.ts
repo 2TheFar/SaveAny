@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { absolutizeBackendUrl, getBackendBaseUrl, getBackendJson, postBackendJson } from "@/lib/backend-client";
 import { toApiError } from "@/lib/errors";
+import { assertValidUrl, detectPlatform } from "@/lib/platform";
 import { assertQuality, downloadVideo } from "@/lib/yt-dlp";
 
 export const runtime = "nodejs";
@@ -24,10 +25,12 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const quality = assertQuality(body.quality);
+    const safeUrl = assertValidUrl(body.url);
+    const isBilibili = detectPlatform(safeUrl).platform === "bilibili";
 
     if (getBackendBaseUrl()) {
       try {
-        const download = await runBackendDownload(body.url, quality);
+        const download = await runBackendDownload(safeUrl, quality);
         return NextResponse.json(
           { download },
           {
@@ -37,11 +40,18 @@ export async function POST(request: Request) {
           }
         );
       } catch (backendError) {
+        if (isBilibili) {
+          throw backendError;
+        }
         console.warn("FastAPI download failed, falling back to Next downloader.", backendError);
       }
     }
 
-    const download = await downloadVideo(body.url, quality);
+    if (isBilibili) {
+      throw new Error("B 站下载需要 FastAPI 后端与 BBDown，本地后端不可用时不会回退到 yt-dlp。");
+    }
+
+    const download = await downloadVideo(safeUrl, quality);
     return NextResponse.json(
       { download },
       {

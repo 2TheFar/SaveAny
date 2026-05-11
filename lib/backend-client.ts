@@ -57,6 +57,15 @@ export async function getBackendJson<T>(path: string, timeoutMs = 15_000): Promi
   return response.json() as Promise<T>;
 }
 
+export async function deleteBackendJson<T>(path: string, timeoutMs = 15_000): Promise<T> {
+  const response = await fetchBackend(path, {
+    method: "DELETE",
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+
+  return response.json() as Promise<T>;
+}
+
 async function fetchBackend(path: string, init: RequestInit) {
   const baseUrl = getBackendBaseUrl();
   if (!baseUrl) {

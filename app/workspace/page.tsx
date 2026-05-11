@@ -11,10 +11,13 @@ import {
   Home,
   Layers3,
   Link2,
+  LogOut,
   Loader2,
   Map,
   MessageSquareText,
+  QrCode,
   Send,
+  ShieldCheck,
   Sparkles,
   Subtitles
 } from "lucide-react";
@@ -111,6 +114,28 @@ type TaskCreatePayload = {
   status: TaskStatus;
 };
 
+type BilibiliSession = {
+  isLoggedIn: boolean;
+  createdAt?: number | null;
+  expiresAt?: number | null;
+};
+
+type BilibiliLogin = {
+  loginId: string;
+  qrImage: string;
+  loginUrl: string;
+  expiresAt: number;
+  status: "pending" | "scanned" | "success" | "expired" | "failed";
+};
+
+type BilibiliLoginStatus = {
+  loginId: string;
+  status: "pending" | "scanned" | "success" | "expired" | "failed";
+  message: string;
+  expiresAt: number;
+  isLoggedIn: boolean;
+};
+
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
@@ -153,9 +178,14 @@ function WorkspaceContent() {
   const [message, setMessage] = useState(initialUrl ? "正在载入工作台..." : "请输入公开视频链接。");
   const [subtitleTask, setSubtitleTask] = useState<TaskSnapshot<SubtitleResult> | null>(null);
   const [summaryTask, setSummaryTask] = useState<TaskSnapshot<SummaryResult> | null>(null);
+  const [bilibiliSession, setBilibiliSession] = useState<BilibiliSession | null>(null);
+  const [bilibiliLogin, setBilibiliLogin] = useState<BilibiliLogin | null>(null);
+  const [bilibiliLoginStatus, setBilibiliLoginStatus] = useState<BilibiliLoginStatus | null>(null);
+  const [bilibiliAuthBusy, setBilibiliAuthBusy] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const runIdRef = useRef(0);
+  const qualityRef = useRef<Quality>("best");
 
   const durationText = useMemo(() => formatDuration(info?.duration), [info?.duration]);
   const qualityOptions = info?.availableQualities?.length ? info.availableQualities : defaultQualities;
@@ -170,6 +200,21 @@ function WorkspaceContent() {
     setUrl(initialUrl);
     void loadInfo(initialUrl);
   }, [initialUrl]);
+
+  useEffect(() => {
+    qualityRef.current = quality;
+  }, [quality]);
+
+  useEffect(() => {
+    if (info?.platform === "bilibili") {
+      void loadBilibiliSession();
+      return;
+    }
+
+    setBilibiliSession(null);
+    setBilibiliLogin(null);
+    setBilibiliLoginStatus(null);
+  }, [info?.platform]);
 
   async function loadInfo(targetUrl = url) {
     const cleanUrl = targetUrl.trim();
@@ -286,6 +331,97 @@ function WorkspaceContent() {
     throw new Error("任务处理超时，请稍后重试。");
   }
 
+  async function loadBilibiliSession() {
+    try {
+      const session = await getJson<BilibiliSession>("/api/platforms/bilibili/session");
+      setBilibiliSession(session);
+    } catch {
+      setBilibiliSession({ isLoggedIn: false });
+    }
+  }
+
+  async function startBilibiliLogin() {
+    setBilibiliAuthBusy(true);
+    setBilibiliLoginStatus(null);
+    try {
+      const login = await postJson<BilibiliLogin>("/api/platforms/bilibili/login", {});
+      setBilibiliLogin(login);
+      setBilibiliLoginStatus({
+        loginId: login.loginId,
+        status: login.status,
+        message: "等待扫码",
+        expiresAt: login.expiresAt,
+        isLoggedIn: false
+      });
+      void pollBilibiliLogin(login.loginId);
+    } catch (error) {
+      setBilibiliLoginStatus({
+        loginId: "",
+        status: "failed",
+        message: error instanceof Error ? error.message : "B 站登录二维码创建失败。",
+        expiresAt: Date.now() / 1000,
+        isLoggedIn: false
+      });
+    } finally {
+      setBilibiliAuthBusy(false);
+    }
+  }
+
+  async function pollBilibiliLogin(loginId: string) {
+    const deadline = Date.now() + 3 * 60_000;
+    while (Date.now() < deadline) {
+      try {
+        const status = await getJson<BilibiliLoginStatus>(`/api/platforms/bilibili/login/${loginId}`);
+        setBilibiliLoginStatus(status);
+        if (status.status === "success") {
+          const selectedQuality = qualityRef.current;
+          setBilibiliLogin(null);
+          await loadBilibiliSession();
+          await refreshInfoPreservingQuality(selectedQuality);
+          return;
+        }
+        if (status.status === "expired" || status.status === "failed") {
+          return;
+        }
+      } catch (error) {
+        setBilibiliLoginStatus({
+          loginId,
+          status: "failed",
+          message: error instanceof Error ? error.message : "B 站登录状态查询失败。",
+          expiresAt: Date.now() / 1000,
+          isLoggedIn: false
+        });
+        return;
+      }
+      await delay(1_200);
+    }
+  }
+
+  async function clearBilibiliLogin() {
+    setBilibiliAuthBusy(true);
+    try {
+      const response = await fetch("/api/platforms/bilibili/session", { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "B 站登录态清除失败。");
+      }
+      setBilibiliSession(data);
+      setBilibiliLogin(null);
+      setBilibiliLoginStatus(null);
+      await refreshInfoPreservingQuality(qualityRef.current);
+    } catch (error) {
+      setBilibiliLoginStatus({
+        loginId: "",
+        status: "failed",
+        message: error instanceof Error ? error.message : "B 站登录态清除失败。",
+        expiresAt: Date.now() / 1000,
+        isLoggedIn: false
+      });
+    } finally {
+      setBilibiliAuthBusy(false);
+    }
+  }
+
   async function handleDownload() {
     setStatus("downloading");
     setDownload(null);
@@ -309,6 +445,37 @@ function WorkspaceContent() {
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "下载失败，请确认链接可公开访问。");
+    }
+  }
+
+  async function refreshInfoPreservingQuality(preferredQuality: Quality) {
+    const cleanUrl = url.trim();
+    if (!cleanUrl || info?.platform !== "bilibili") {
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/video/info", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: cleanUrl })
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "B 站质量状态刷新失败。");
+      }
+
+      setInfo(data.info);
+      setQuality((current) => {
+        const wanted = preferredQuality || current;
+        const options = data.info.availableQualities as QualityOption[];
+        return options.some((item) => item.value === wanted && item.available)
+          ? wanted
+          : data.info.recommendedQuality || "best";
+      });
+    } catch {
+      // 登录态刷新失败不打断当前工作台，下载时后端仍会给出准确错误。
     }
   }
 
@@ -400,6 +567,17 @@ function WorkspaceContent() {
           </div>
 
           <TaskPills subtitleTask={subtitleTask} summaryTask={summaryTask} />
+
+          {info?.platform === "bilibili" ? (
+            <BilibiliAuthPanel
+              session={bilibiliSession}
+              login={bilibiliLogin}
+              loginStatus={bilibiliLoginStatus}
+              busy={bilibiliAuthBusy}
+              onLogin={() => void startBilibiliLogin()}
+              onClear={() => void clearBilibiliLogin()}
+            />
+          ) : null}
 
           <div className="workspace-quality" role="radiogroup" aria-label="下载质量">
             {qualityOptions.map((item) => (
@@ -504,6 +682,53 @@ function StatusLine({
     <div className={`workspace-status ${status}`}>
       {icon}
       <span>{message}</span>
+    </div>
+  );
+}
+
+function BilibiliAuthPanel({
+  session,
+  login,
+  loginStatus,
+  busy,
+  onLogin,
+  onClear
+}: {
+  session: BilibiliSession | null;
+  login: BilibiliLogin | null;
+  loginStatus: BilibiliLoginStatus | null;
+  busy: boolean;
+  onLogin: () => void;
+  onClear: () => void;
+}) {
+  const isLoggedIn = Boolean(session?.isLoggedIn || loginStatus?.isLoggedIn);
+  const statusText = isLoggedIn
+    ? "已登录：可尝试账号权限内最高画质"
+    : loginStatus?.message || "未登录：公开视频可下载，登录可解锁更高清晰度";
+
+  return (
+    <div className="bilibili-auth-panel">
+      <div className="bilibili-auth-head">
+        <ShieldCheck size={18} />
+        <span>B 站权限</span>
+      </div>
+      <p>{statusText}</p>
+      {login?.qrImage && !isLoggedIn ? (
+        <div className="bilibili-qr-box">
+          <img src={login.qrImage} alt="B 站扫码登录二维码" />
+          <span>使用哔哩哔哩 App 扫码确认</span>
+        </div>
+      ) : null}
+      <div className="bilibili-auth-actions">
+        <button type="button" onClick={onLogin} disabled={busy || isLoggedIn}>
+          {busy ? <Loader2 className="spin" size={16} /> : <QrCode size={16} />}
+          扫码登录
+        </button>
+        <button type="button" onClick={onClear} disabled={busy || !isLoggedIn}>
+          <LogOut size={16} />
+          清除登录
+        </button>
+      </div>
     </div>
   );
 }

@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from app.api.files import router as files_router
 from app.api.health import router as health_router
 from app.api.media import router as media_router
+from app.api.platforms import router as platforms_router
 from app.api.system import router as system_router
 from app.api.tasks import router as tasks_router
 from app.api.thumbnails import router as thumbnails_router
@@ -23,6 +24,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(system_router)
 app.include_router(media_router)
+app.include_router(platforms_router)
 app.include_router(tasks_router)
 app.include_router(files_router)
 app.include_router(thumbnails_router)
