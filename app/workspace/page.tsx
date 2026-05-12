@@ -175,7 +175,7 @@ function WorkspaceContent() {
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "downloading" | "done" | "error">(
     initialUrl ? "loading" : "idle"
   );
-  const [message, setMessage] = useState(initialUrl ? "正在载入工作台..." : "请输入公开视频链接。");
+  const [message, setMessage] = useState(initialUrl ? "正在载入 AI 功能页..." : "请输入公开视频链接。");
   const [subtitleTask, setSubtitleTask] = useState<TaskSnapshot<SubtitleResult> | null>(null);
   const [summaryTask, setSummaryTask] = useState<TaskSnapshot<SummaryResult> | null>(null);
   const [bilibiliSession, setBilibiliSession] = useState<BilibiliSession | null>(null);
@@ -252,7 +252,7 @@ function WorkspaceContent() {
       setInfo(data.info);
       setQuality(data.info.recommendedQuality || "best");
       setStatus("ready");
-      setMessage(`工作台已就绪：${platformLabel(data.info.platform)} · ${data.info.resolverUsed}`);
+      setMessage(`AI 功能页已就绪：${platformLabel(data.info.platform)} · ${data.info.resolverUsed}`);
       void startSubtitleTask(cleanUrl, runId);
     } catch (error) {
       if (runIdRef.current !== runId) {
@@ -425,7 +425,7 @@ function WorkspaceContent() {
   async function handleDownload() {
     setStatus("downloading");
     setDownload(null);
-    setMessage("正在保存视频，稍大的文件需要多等一会儿...");
+    setMessage("保存中...");
 
     try {
       const response = await fetch("/api/video/download", {
@@ -475,7 +475,7 @@ function WorkspaceContent() {
           : data.info.recommendedQuality || "best";
       });
     } catch {
-      // 登录态刷新失败不打断当前工作台，下载时后端仍会给出准确错误。
+      // 登录态刷新失败不打断当前功能页，下载时后端仍会给出准确错误。
     }
   }
 
@@ -524,7 +524,7 @@ function WorkspaceContent() {
           SaveAny
         </Link>
         <div className="workspace-title">
-          <span>{info ? platformLabel(info.platform) : "视频工作台"}</span>
+          <span>{info ? platformLabel(info.platform) : "AI 功能页"}</span>
           <strong>{info?.title || "解析后整理视频内容"}</strong>
         </div>
       </header>
@@ -550,7 +550,7 @@ function WorkspaceContent() {
         <aside className="media-panel">
           <div className="workspace-section-title">
             <FileVideo size={19} />
-            <span>视频素材</span>
+            <span>内容素材</span>
           </div>
 
           <div className="workspace-thumb">
@@ -601,7 +601,7 @@ function WorkspaceContent() {
             disabled={!info || status === "loading" || status === "downloading"}
           >
             {status === "downloading" ? <Loader2 className="spin" size={19} /> : <Download size={19} />}
-            下载当前质量
+            {status === "downloading" ? "保存中..." : "保存"}
           </button>
 
           {download ? (
@@ -613,7 +613,7 @@ function WorkspaceContent() {
         </aside>
 
         <section className="ai-panel">
-          <div className="workspace-tabs" role="tablist" aria-label="视频 AI 工作台">
+          <div className="workspace-tabs" role="tablist" aria-label="视频 AI 功能">
             {tabs.map((tab) => (
               <button
                 className={activeTab === tab.value ? "workspace-tab active" : "workspace-tab"}
@@ -654,7 +654,7 @@ function WorkspaceLoading() {
     <main className="workspace-shell">
       <div className="workspace-loading">
         <Loader2 className="spin" size={22} />
-        正在打开视频工作台...
+        正在打开 AI 功能页...
       </div>
     </main>
   );
